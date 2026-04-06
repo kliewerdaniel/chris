@@ -94,7 +94,7 @@ def build_tiered_prompt(
     return full_prompt
 
 
-def call_llama_cpp(prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> Optional[str]:
+def call_llama_cpp(prompt: str, max_tokens: int = 512, temperature: float = 0.7, retry: bool = True) -> Optional[str]:
     """Send request to llama.cpp server and return generated text."""
     try:
         payload = {
@@ -104,14 +104,31 @@ def call_llama_cpp(prompt: str, max_tokens: int = 512, temperature: float = 0.7)
             "temperature": temperature,
             "top_p": 0.9,
             "repeat_penalty": 1.1,
-            "stop": ["User:", "Chris:", "\n---"]
+            "stop": ["User:", "Chris:", "\n---"],
+            "n_keep": -1
         }
         
         response = requests.post(LLAMA_CPP_ENDPOINT, json=payload, timeout=120)
         response.raise_for_status()
         
         data = response.json()
-        return data.get("content", "").strip()
+        result = data.get("content", "").strip()
+        
+        # Post-processing quality check
+        if retry:
+            is_empty = not result
+            is_only_punctuation = all(not c.isalnum() for c in result)
+            
+            if is_empty or is_only_punctuation:
+                # Retry once with lower temperature
+                print(f"⚠️  Bad LLM response detected, retrying with temperature=0.5")
+                retry_result = call_llama_cpp(prompt, max_tokens, 0.5, False)
+                if retry_result:
+                    return retry_result
+                # If retry also failed, return original result anyway
+                return result
+        
+        return result
     
     except Exception as e:
         print(f"LLM request failed: {e}")

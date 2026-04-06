@@ -2,9 +2,10 @@
 """Intelligent memory extraction and management system."""
 
 import re
+from datetime import datetime
 from typing import Dict, List
 from llm import call_llama_cpp
-from database import save_memory, get_all_memories
+from database import save_memory, get_all_memories, delete_memory
 
 MEMORY_EXTRACTION_PROMPT = """You are a memory extractor. Analyze the last conversation turn and extract any new facts, preferences, or information about the user that should be remembered long term.
 
@@ -79,9 +80,35 @@ def process_conversation_for_memory(user_message: str, assistant_response: str):
     conversation = f"User: {user_message}\nAssistant: {assistant_response}"
 
     new_memories = extract_memories(conversation)
+    existing = get_all_memories()
+
+    # Update LAST_SEEN timestamp on every conversation turn
+    save_memory("LAST_SEEN", datetime.utcnow().isoformat())
 
     for key, value in new_memories.items():
+        # Deduplication check: skip if essentially same value already exists
+        if key in existing:
+            existing_normalized = existing[key].strip().lower()
+            new_normalized = value.strip().lower()
+            if existing_normalized == new_normalized:
+                continue
+        
         save_memory(key, value)
+    
+    # Cap total memories at 100 keys
+    all_memories = get_all_memories()
+    if len(all_memories) > 100:
+        # Core keys that are never deleted
+        CORE_KEYS = {"NAME", "CORE_IDENTITY", "LAST_SEEN"}
+        
+        # Get non-core keys in order (oldest first)
+        non_core_keys = [k for k in all_memories.keys() if k not in CORE_KEYS]
+        
+        # Delete oldest non-core keys until under limit
+        while len(all_memories) > 100 and non_core_keys:
+            oldest_key = non_core_keys.pop(0)
+            delete_memory(oldest_key)
+            all_memories = get_all_memories()
 
     return new_memories
 

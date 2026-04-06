@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""SQLite database for persistent memory and conversation history."""
+"""SQLite database for conversation history, JSON file for memory storage."""
 
 import sqlite3
 import time
+import json
+import os
 from typing import List, Dict, Optional
 from pathlib import Path
 
 DB_FILE = "companion.db"
+MEMORIES_FILE = "memories.json"
+MEMORIES_TMP_FILE = "memories.json.tmp"
 
 
 def init_db():
@@ -25,19 +29,34 @@ def init_db():
     )
     ''')
 
-    # Memories table (key-value store with timestamps)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS memories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT UNIQUE NOT NULL,
-        value TEXT NOT NULL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
-    )
-    ''')
-
     conn.commit()
     conn.close()
+
+    # Initialize memories file if doesn't exist
+    if not Path(MEMORIES_FILE).exists():
+        with open(MEMORIES_FILE, 'w', encoding='utf-8') as f:
+            json.dump({}, f, indent=2)
+
+
+def _load_memories() -> Dict[str, str]:
+    """Load all memories from JSON file."""
+    try:
+        with open(MEMORIES_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+
+def _save_memories(memories: Dict[str, str]):
+    """Save memories atomically to JSON file to prevent corruption."""
+    # Write to temporary file first
+    with open(MEMORIES_TMP_FILE, 'w', encoding='utf-8') as f:
+        json.dump(memories, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    
+    # Atomic rename
+    os.replace(MEMORIES_TMP_FILE, MEMORIES_FILE)
 
 
 def save_message(role: str, content: str, session_id: str = 'default'):
@@ -89,74 +108,40 @@ def clear_conversation_history(session_id: str = 'default'):
 
 def save_memory(key: str, value: str):
     """Save or update a memory entry (upsert)."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    now = time.time()
-
-    cursor.execute('''
-    INSERT INTO memories (key, value, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET
-        value = excluded.value,
-        updated_at = excluded.updated_at
-    ''', (key.upper(), value, now, now))
-
-    conn.commit()
-    conn.close()
+    memories = _load_memories()
+    memories[key.upper()] = value
+    _save_memories(memories)
 
 
 def get_all_memories() -> Dict[str, str]:
     """Get all stored memories as a dictionary."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT key, value FROM memories ORDER BY created_at")
-    rows = cursor.fetchall()
-    conn.close()
-
-    return {row['key']: row['value'] for row in rows}
+    return _load_memories()
 
 
 def delete_memory(key: str) -> bool:
     """Delete a memory by key. Returns True if deleted."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM memories WHERE key = ?", (key.upper(),))
-    deleted = cursor.rowcount > 0
-
-    conn.commit()
-    conn.close()
-    return deleted
+    memories = _load_memories()
+    key_upper = key.upper()
+    if key_upper in memories:
+        del memories[key_upper]
+        _save_memories(memories)
+        return True
+    return False
 
 
 def search_memories(query: str) -> Dict[str, str]:
     """Search memories for matching key or value."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    search_term = f"%{query}%"
-    cursor.execute('''
-    SELECT key, value FROM memories
-    WHERE key LIKE ? OR value LIKE ?
-    ORDER BY updated_at DESC
-    ''', (search_term, search_term))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    return {row['key']: row['value'] for row in rows}
+    memories = _load_memories()
+    query_lower = query.lower()
+    results = {}
+    
+    for key, value in memories.items():
+        if query_lower in key.lower() or query_lower in value.lower():
+            results[key] = value
+    
+    return results
 
 
 def clear_all_memories():
     """Delete all stored memories."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM memories")
-
-    conn.commit()
-    conn.close()
+    _save_memories({})

@@ -3,6 +3,7 @@
 
 import os
 import uuid
+import time
 import numpy as np
 import soundfile as sf
 from pathlib import Path
@@ -74,6 +75,21 @@ def generate_speech(text: str, speed: float = 1.0) -> str:
         file_id = str(uuid.uuid4())
         output_path = os.path.join(OUTPUT_DIR, f"{file_id}.wav")
         sf.write(output_path, audio, sample_rate)
+        
+        # Clean up old audio files older than 1 hour
+        now = time.time()
+        one_hour = 3600
+        
+        for filename in os.listdir(OUTPUT_DIR):
+            if filename.endswith('.wav'):
+                file_path = os.path.join(OUTPUT_DIR, filename)
+                try:
+                    file_age = now - os.stat(file_path).st_mtime
+                    if file_age > one_hour:
+                        os.unlink(file_path)
+                except Exception:
+                    # Ignore errors on cleanup
+                    pass
         
         return output_path
     

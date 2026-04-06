@@ -8,11 +8,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
+import requests
 from memory import load_core_memory
 from database import init_db, save_message, get_recent_messages, clear_conversation_history, clear_all_memories, get_all_memories, save_memory
 from memory_manager import format_memories_for_context, process_conversation_for_memory
-from llm import build_tiered_prompt, call_llama_cpp, summarize_conversation
-from tts import generate_speech, OUTPUT_DIR
+from llm import build_tiered_prompt, call_llama_cpp, summarize_conversation, LLAMA_CPP_ENDPOINT
+from tts import generate_speech, OUTPUT_DIR, REFERENCE_VOICE
+from utils import sanitize_response
 
 
 class ChatRequest(BaseModel):
@@ -48,11 +50,33 @@ async def lifespan(app: FastAPI):
         save_memory("CORE_IDENTITY", core_memory)
     
     print(f"✅ Core memory loaded: {len(core_memory)} characters")
-    print(f"✅ Loaded {len(existing_memories)} stored memories")
+    print(f"🧠 Loaded {len(existing_memories)} stored memories")
     
     # Load last 20 messages on startup
     recent = get_recent_messages(20)
-    print(f"✅ Loaded {len(recent)} previous conversation messages")
+    print(f"💬 Loaded {len(recent)} previous conversation messages")
+    
+    # Check voice file
+    if os.path.exists(REFERENCE_VOICE):
+        print(f"✅ Reference voice file '{REFERENCE_VOICE}' found")
+    else:
+        print(f"⚠️  Reference voice file '{REFERENCE_VOICE}' not found - using default voice")
+    
+    # Check llama.cpp server connectivity
+    llama_ok = False
+    try:
+        response = requests.post(LLAMA_CPP_ENDPOINT, json={"prompt": "", "max_tokens": 1}, timeout=3)
+        llama_ok = response.status_code < 500
+        print("✅ llama.cpp server is reachable")
+    except Exception:
+        print("⚠️  llama.cpp server is not reachable")
+    
+    print("\n📊 Startup summary:")
+    print(f"   Memories: {len(existing_memories)}")
+    print(f"   Messages: {len(recent)}")
+    print(f"   Voice file: {'✓' if os.path.exists(REFERENCE_VOICE) else '✗'}")
+    print(f"   LLM server: {'✓' if llama_ok else '✗'}")
+    print()
     
     yield
 
@@ -106,22 +130,25 @@ async def chat(request: ChatRequest):
     if not llm_response:
         raise HTTPException(status_code=500, detail="Failed to get LLM response")
     
+    # Sanitize response before any further processing
+    clean_response = sanitize_response(llm_response)
+
     # 6. Save assistant response
-    save_message("assistant", llm_response)
-    
+    save_message("assistant", clean_response)
+
     # 7. Extract memories from this conversation turn
-    process_conversation_for_memory(request.message, llm_response)
-    
+    process_conversation_for_memory(request.message, clean_response)
+
     # 8. Generate TTS
     try:
-        audio_path = generate_speech(llm_response)
+        audio_path = generate_speech(clean_response)
         audio_filename = os.path.basename(audio_path)
         audio_url = f"/audio/{audio_filename}"
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
     
     return ChatResponse(
-        text=llm_response,
+        text=clean_response,
         audio_url=audio_url
     )
 
@@ -147,6 +174,29 @@ async def reset_memories():
 async def list_memories():
     """List all currently stored memories."""
     return get_all_memories()
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint with system status."""
+    memory_count = len(get_all_memories())
+    conversation_count = len(get_recent_messages(10000))
+    
+    # Check if llama.cpp server is reachable
+    llama_ok = False
+    try:
+        # Simple ping request
+        response = requests.post(LLAMA_CPP_ENDPOINT, json={"prompt": "", "max_tokens": 1}, timeout=2)
+        llama_ok = response.status_code < 500
+    except Exception:
+        pass
+    
+    return {
+        "status": "ok",
+        "memories": memory_count,
+        "conversation_messages": conversation_count,
+        "llama_cpp_connected": llama_ok
+    }
 
 
 if __name__ == "__main__":
