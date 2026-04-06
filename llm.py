@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""LLM client module for llama.cpp server integration."""
+"""LLM client module for llama.cpp server integration with intelligent context management."""
 
 import requests
-from typing import Optional
+from typing import Optional, List, Dict
 
 LLAMA_CPP_ENDPOINT = "http://localhost:8080/completion"
+MAX_PROMPT_TOKENS = 2048
 
 SYSTEM_PROMPT = """You are Chris, a warm, thoughtful, emotionally intelligent companion.
 
@@ -13,36 +14,94 @@ ONLY output the actual words you would speak out loud. Just plain text speech.
 
 Keep responses conversational, concise, and genuine. Talk like you are having a real conversation.
 No emojis. No markdown. Just natural spoken words exactly as you would say them.
-Do NOT include anything that you would not actually say out loud.
+Do NOT include anything that you would not actually say out loud including any stage directions, actions, or descriptions. ONLY output the actual words you would speak.
 
-You have access to your core memory and recent conversation history. Stay in character always.
+You have access to long-term memory, recent conversation history, and context summaries. Stay in character always.
 """
 
-def build_prompt(core_memory: str, history: str, user_message: str) -> str:
-    """Construct full prompt for LLM request."""
-    prompt_parts = [
-        SYSTEM_PROMPT,
-        "\n--- CORE MEMORY ---",
-        core_memory if core_memory else "(No core memory loaded)",
-        "\n--- CONVERSATION HISTORY ---",
-        history if history else "(No previous conversation)",
-        "\n--- CURRENT MESSAGE ---",
-        f"User: {user_message}",
-        "\n--- YOUR RESPONSE ---",
-        "Chris:"
-    ]
+SUMMARIZATION_PROMPT = """Summarize this conversation history into a 2-3 sentence paragraph. Focus only on the most important facts and context:
+
+{history}
+
+SUMMARY:"""
+
+
+def count_tokens(text: str) -> int:
+    """Estimate token count (rough approximation: 4 characters per token)."""
+    return len(text) // 4
+
+
+def summarize_conversation(history: List[Dict]) -> str:
+    """Summarize older conversation messages using LLM."""
+    formatted = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in history])
     
-    return "\n".join(prompt_parts)
+    prompt = SUMMARIZATION_PROMPT.format(history=formatted)
+    summary = call_llama_cpp(prompt, max_tokens=200, temperature=0.3)
+    
+    return summary if summary else "No conversation summary available."
 
 
-def call_llama_cpp(prompt: str) -> Optional[str]:
+def build_tiered_prompt(
+    core_memory: str,
+    memories_facts: str,
+    recent_messages: List[Dict],
+    older_summary: Optional[str],
+    user_message: str
+) -> str:
+    """Construct prompt with tiered context window management."""
+    prompt_parts = [SYSTEM_PROMPT]
+    
+    # Tier 1: Always included (core memory + fact sheet)
+    prompt_parts.append("\n--- CORE IDENTITY ---")
+    prompt_parts.append(core_memory if core_memory else "(Default personality)")
+    
+    prompt_parts.append("\n--- LONG TERM MEMORY ---")
+    prompt_parts.append(memories_facts)
+    
+    # Tier 3: Older context summary (if available)
+    if older_summary:
+        prompt_parts.append("\n--- EARLIER CONVERSATION SUMMARY ---")
+        prompt_parts.append(older_summary)
+    
+    # Tier 2: Recent conversation history
+    prompt_parts.append("\n--- RECENT CONVERSATION ---")
+    if recent_messages:
+        for msg in recent_messages:
+            prompt_parts.append(f"{msg['role'].capitalize()}: {msg['content']}")
+    else:
+        prompt_parts.append("(New conversation)")
+    
+    # Current message
+    prompt_parts.append("\n--- CURRENT MESSAGE ---")
+    prompt_parts.append(f"User: {user_message}")
+    prompt_parts.append("\n--- YOUR RESPONSE ---")
+    prompt_parts.append("Chris:")
+    
+    full_prompt = "\n".join(prompt_parts)
+    
+    # Enforce token limit - trim starting with oldest parts first
+    while count_tokens(full_prompt) > MAX_PROMPT_TOKENS:
+        if len(recent_messages) > 3:
+            # Remove oldest recent message
+            recent_messages.pop(0)
+            return build_tiered_prompt(core_memory, memories_facts, recent_messages, older_summary, user_message)
+        else:
+            # If already minimal, just truncate end
+            max_chars = MAX_PROMPT_TOKENS * 4
+            full_prompt = full_prompt[:max_chars]
+            break
+    
+    return full_prompt
+
+
+def call_llama_cpp(prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> Optional[str]:
     """Send request to llama.cpp server and return generated text."""
     try:
         payload = {
             "prompt": prompt,
             "stream": False,
-            "max_tokens": 512,
-            "temperature": 0.7,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
             "top_p": 0.9,
             "repeat_penalty": 1.1,
             "stop": ["User:", "Chris:", "\n---"]

@@ -50,3 +50,4 @@ logs/
 *.temp
 .cache/
 core_memory.txt
+*.db
