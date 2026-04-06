@@ -130,10 +130,79 @@
             font-size: 0.9rem;
             cursor: pointer;
             user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         #memory-badge:hover {
             background: #334155;
+        }
+
+        .context-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            transition: background-color 0.3s ease;
+        }
+
+        .context-dot.low { background-color: #22c55e; }
+        .context-dot.medium { background-color: #eab308; }
+        .context-dot.high { background-color: #ef4444; }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-btn {
+            background: #334155;
+            border: none;
+            color: #cbd5e1;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        .header-btn:hover {
+            background: #475569;
+        }
+
+        .persona-panel {
+            background: rgba(30, 41, 59, 0.95);
+            border-bottom: 1px solid #334155;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+
+        .persona-panel.open {
+            max-height: 500px;
+        }
+
+        .persona-content {
+            padding: 12px 20px;
+        }
+
+        .persona-content textarea {
+            width: 100%;
+            min-height: 250px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #e2e8f0;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            resize: vertical;
+            margin-bottom: 12px;
+        }
+
+        .persona-actions {
+            display: flex;
+            gap: 12px;
         }
 
         .memory-panel {
@@ -313,12 +382,30 @@
 <body>
     <div class="container">
         <div class="header">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <h1>Chris</h1>
+                <div id="context-dot" class="context-dot low" title="Context status"></div>
+            </div>
             
-            <div id="memory-badge">🧠 <span id="memory-count">0</span> memories</div>
-            <button id="reset-btn">Reset</button>
+            <div class="header-right">
+                <button id="export-btn" class="header-btn">📥 Export</button>
+                <button id="persona-btn" class="header-btn">✏️ Persona</button>
+                <div id="memory-badge">🧠 <span id="memory-count">0</span> memories</div>
+                <button id="reset-btn">Reset</button>
+            </div>
         </div>
 
         <div id="memory-panel" class="memory-panel"></div>
+        
+        <div id="persona-panel" class="persona-panel">
+            <div class="persona-content">
+                <textarea id="persona-editor"></textarea>
+                <div class="persona-actions">
+                    <button id="persona-save" class="modal-btn chat-only">Save Persona</button>
+                    <button id="persona-cancel" class="modal-btn cancel">Cancel</button>
+                </div>
+            </div>
+        </div>
         
         <div id="chat-container"></div>
         
@@ -356,6 +443,13 @@
         const memoryCount = document.getElementById('memory-count');
         const memoryPanel = document.getElementById('memory-panel');
         const resetModal = document.getElementById('reset-modal');
+        const contextDot = document.getElementById('context-dot');
+        const exportBtn = document.getElementById('export-btn');
+        const personaBtn = document.getElementById('persona-btn');
+        const personaPanel = document.getElementById('persona-panel');
+        const personaEditor = document.getElementById('persona-editor');
+        const personaSave = document.getElementById('persona-save');
+        const personaCancel = document.getElementById('persona-cancel');
 
         let isProcessing = false;
 
@@ -485,11 +579,64 @@
         // Fetch memories on load and after each message
         fetchMemories();
 
-        // Update memories after every chat response
+        async function updateContextStatus() {
+            try {
+                const res = await fetch('/context_status');
+                const status = await res.json();
+                
+                contextDot.className = `context-dot ${status.pressure}`;
+                contextDot.title = `Context: ${status.percentage}% full (${status.used_tokens}/${status.max_tokens} tokens)`;
+            } catch (e) {}
+        }
+
+        exportBtn.addEventListener('click', () => {
+            window.open('/export', '_blank');
+        });
+
+        personaBtn.addEventListener('click', async () => {
+            if (personaPanel.classList.contains('open')) {
+                personaPanel.classList.remove('open');
+            } else {
+                try {
+                    const res = await fetch('/persona');
+                    const persona = await res.json();
+                    personaEditor.value = JSON.stringify(persona, null, 2);
+                    personaPanel.classList.add('open');
+                } catch (e) {
+                    setStatus('Failed to load persona');
+                }
+            }
+        });
+
+        personaCancel.addEventListener('click', () => {
+            personaPanel.classList.remove('open');
+        });
+
+        personaSave.addEventListener('click', async () => {
+            try {
+                const persona = JSON.parse(personaEditor.value);
+                await fetch('/persona', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(persona)
+                });
+                setStatus('Persona updated successfully');
+                personaPanel.classList.remove('open');
+            } catch (e) {
+                setStatus('Invalid JSON or failed to save');
+            }
+        });
+
+        // Update context status on load, every 10 seconds, and after each message
+        updateContextStatus();
+        setInterval(updateContextStatus, 10000);
+
+        // Wrap sendMessage once to update status after messages
         const originalSendMessage = sendMessage;
         sendMessage = async function() {
             await originalSendMessage.apply(this, arguments);
             fetchMemories();
+            updateContextStatus();
         };
 
         messageInput.focus();

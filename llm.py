@@ -31,6 +31,28 @@ def count_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def context_status(full_prompt: str = "") -> Dict:
+    """Get context window usage status."""
+    used = count_tokens(full_prompt)
+    max_tokens = MAX_PROMPT_TOKENS
+    
+    percentage = (used / max_tokens) * 100
+    
+    if percentage < 60:
+        pressure = "low"
+    elif percentage < 85:
+        pressure = "medium"
+    else:
+        pressure = "high"
+    
+    return {
+        "used_tokens": used,
+        "max_tokens": max_tokens,
+        "pressure": pressure,
+        "percentage": round(percentage, 1)
+    }
+
+
 def summarize_conversation(history: List[Dict]) -> str:
     """Summarize older conversation messages using LLM."""
     formatted = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in history])
@@ -108,7 +130,7 @@ def call_llama_cpp(prompt: str, max_tokens: int = 512, temperature: float = 0.7,
             "n_keep": -1
         }
         
-        response = requests.post(LLAMA_CPP_ENDPOINT, json=payload, timeout=120)
+        response = requests.post(LLAMA_CPP_ENDPOINT, json=payload, timeout=300)
         response.raise_for_status()
         
         data = response.json()
